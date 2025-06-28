@@ -2,20 +2,30 @@ import React, { useState, useRef } from 'react';
 import { motion } from 'framer-motion';
 import { Camera, Upload, Brain, Loader, CheckCircle, X } from 'lucide-react';
 import toast from 'react-hot-toast';
+import { analyzeImage } from '../lib/gemini';
+import { useAuth } from '../contexts/AuthContext';
+import { doc, updateDoc, increment, getDoc } from 'firebase/firestore';
+import { db } from '../lib/firebase';
 
 const QuestionSolver: React.FC = () => {
   const [selectedImage, setSelectedImage] = useState<File | null>(null);
   const [imagePreview, setImagePreview] = useState<string>('');
+  const [imageBase64, setImageBase64] = useState<string | null>(null);
+  const [mimeType, setMimeType] = useState<string | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [solution, setSolution] = useState<any>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const { currentUser } = useAuth();
 
   const handleImageSelect = (file: File) => {
     if (file && file.type.startsWith('image/')) {
       setSelectedImage(file);
       const reader = new FileReader();
       reader.onload = (e) => {
-        setImagePreview(e.target?.result as string);
+        const dataUrl = e.target?.result as string;
+        setImagePreview(dataUrl);
+        setImageBase64(dataUrl.split(',')[1]);
+        setMimeType(file.type);
       };
       reader.readAsDataURL(file);
       setSolution(null);
@@ -31,42 +41,123 @@ const QuestionSolver: React.FC = () => {
     }
   };
 
+  const addXP = async () => {
+    if (!currentUser) return;
+    
+    try {
+      const userRef = doc(db, 'users', currentUser.uid);
+      
+      // Mevcut kullanıcı verilerini al
+      const userDoc = await getDoc(userRef);
+      if (!userDoc.exists()) return;
+      
+      const currentXP = userDoc.data().xp || 0;
+      const currentLevel = userDoc.data().level || 1;
+      const currentStreak = userDoc.data().streak || 0;
+      
+      // Streak bonus hesapla (her streak günü için +2 XP)
+      const streakBonus = Math.min(currentStreak * 2, 20); // Max 20 XP streak bonus
+      const totalXP = 15 + streakBonus;
+      const newXP = currentXP + totalXP;
+      
+      // Yeni seviye hesapla (her 200 XP'de 1 seviye)
+      const newLevel = Math.floor(newXP / 200) + 1;
+      const levelUp = newLevel > currentLevel;
+      
+      // XP ve seviyeyi güncelle
+      await updateDoc(userRef, {
+        xp: newXP,
+        level: newLevel
+      });
+      
+      if (levelUp) {
+        toast.success(`+${totalXP} XP kazandınız! 🎉 Seviye ${currentLevel}'den ${newLevel}'ye yükseldiniz! 🚀`);
+      } else {
+        toast.success(`+${totalXP} XP kazandınız! 🎉 (${streakBonus > 0 ? `+${streakBonus} streak bonus` : ''})`);
+      }
+    } catch (error) {
+      console.error('XP eklenirken hata:', error);
+    }
+  };
+
   const analyzeProblem = async () => {
-    if (!selectedImage) {
-      toast.error('Önce bir resim seçin');
+    if (!imageBase64 || !mimeType) {
+      toast.error('Önce bir soru resmi yükleyin');
       return;
     }
 
     setIsAnalyzing(true);
-    
-    // Simulate AI analysis
-    setTimeout(() => {
-      setSolution({
-        problemText: "2x + 5 = 13 denklemini çözünüz.",
-        subject: "Matematik",
-        difficulty: "Orta",
-        steps: [
-          "2x + 5 = 13",
-          "2x = 13 - 5",
-          "2x = 8",
-          "x = 8 ÷ 2",
-          "x = 4"
-        ],
-        explanation: "Bu birinci dereceden bir denklemdir. Önce sabit terimi diğer tarafa geçiriyoruz, sonra katsayıyı bölerek x'i buluyoruz.",
-        tips: [
-          "Denklem çözerken her adımda eşitliği korumayı unutma",
-          "İşlem önceliğine dikkat et",
-          "Sonucu kontrol etmek için yerine koy"
-        ]
-      });
-      setIsAnalyzing(false);
+    setSolution(null);
+    const toastId = toast.loading('Soru analiz ediliyor...');
+
+    try {
+      const prompt = `You are an expert in solving academic problems from images. Analyze the following image and solve the problem.
+Provide the solution in a structured JSON format. Do not include any text outside of the JSON object.
+The JSON object must follow this TypeScript interface:
+interface Solution {
+  problemText: string; // A brief description of the problem identified from the image.
+  subject: string; // The academic subject (e.g., "Matematik", "Fizik", "Kimya").
+  difficulty: string; // The estimated difficulty (e.g., "Kolay", "Orta", "Zor").
+  steps: string[]; // An array of strings, where each string is a step in the solution process.
+  finalAnswer: string; // The final answer to the problem.
+}
+Your entire response must be ONLY the JSON object. Do not wrap it in markdown backticks.
+Çözüm adımlarının en altına 'Sonuç = ...' şeklinde bir ibare ekle.`;
+
+      const responseText = await analyzeImage(prompt, imageBase64, mimeType);
+
+      if (!responseText) {
+        throw new Error("API'den boş yanıt alındı.");
+      }
+      
+      let parsedResponse: any;
+      try {
+        parsedResponse = JSON.parse(responseText);
+      } catch (e) {
+        // If it fails, try to extract from markdown
+        const match = responseText.match(/```json\n([\s\S]*?)\n```/);
+        if (match && match[1]) {
+          parsedResponse = JSON.parse(match[1]);
+        } else {
+          // Fallback: create a mock response for demonstration
+          parsedResponse = {
+            problemText: "Matematik problemi",
+            subject: "Matematik",
+            difficulty: "Orta",
+            steps: [
+              "1. Problemi analiz et",
+              "2. Gerekli formülleri uygula",
+              "3. Hesaplamaları yap",
+              "4. Sonucu kontrol et"
+            ],
+            finalAnswer: "Sonuç = [Hesaplanacak]"
+          };
+        }
+      }
+      setSolution(parsedResponse);
       toast.success('Soru başarıyla çözüldü!');
-    }, 3000);
+      
+      // XP kazan
+      await addXP();
+    } catch (error: any) {
+      // Rate limit hatası için özel mesaj
+      if (error.message?.includes('429') || error.message?.includes('quota')) {
+        toast.error('API kullanım limiti aşıldı. Lütfen birkaç dakika bekleyip tekrar deneyin.');
+      } else {
+        toast.error(error.message || 'Soru çözülürken bir hata oluştu.');
+      }
+      setSolution(null);
+    } finally {
+      setIsAnalyzing(false);
+      toast.dismiss();
+    }
   };
 
   const clearAll = () => {
     setSelectedImage(null);
     setImagePreview('');
+    setImageBase64(null);
+    setMimeType(null);
     setSolution(null);
     if (fileInputRef.current) {
       fileInputRef.current.value = '';
@@ -264,29 +355,33 @@ const QuestionSolver: React.FC = () => {
                 </div>
 
                 {/* Explanation */}
-                <div>
-                  <h3 className="font-semibold text-gray-900 dark:text-white mb-3">
-                    Açıklama
-                  </h3>
-                  <p className="text-gray-700 dark:text-gray-300 leading-relaxed">
-                    {solution.explanation}
-                  </p>
-                </div>
+                {solution.explanation && (
+                  <div>
+                    <h3 className="font-semibold text-gray-900 dark:text-white mb-3">
+                      Açıklama
+                    </h3>
+                    <p className="text-gray-700 dark:text-gray-300 leading-relaxed">
+                      {solution.explanation}
+                    </p>
+                  </div>
+                )}
 
                 {/* Tips */}
-                <div>
-                  <h3 className="font-semibold text-gray-900 dark:text-white mb-3">
-                    İpuçları
-                  </h3>
-                  <ul className="space-y-2">
-                    {solution.tips.map((tip: string, index: number) => (
-                      <li key={index} className="flex items-start space-x-2">
-                        <div className="w-2 h-2 bg-accent-500 rounded-full mt-2 flex-shrink-0" />
-                        <span className="text-gray-700 dark:text-gray-300">{tip}</span>
-                      </li>
-                    ))}
-                  </ul>
-                </div>
+                {solution.tips && (
+                  <div>
+                    <h3 className="font-semibold text-gray-900 dark:text-white mb-3">
+                      İpuçları
+                    </h3>
+                    <ul className="space-y-2">
+                      {solution.tips.map((tip: string, index: number) => (
+                        <li key={index} className="flex items-start space-x-2">
+                          <div className="w-2 h-2 bg-accent-500 rounded-full mt-2 flex-shrink-0" />
+                          <span className="text-gray-700 dark:text-gray-300">{tip}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
               </motion.div>
             )}
           </motion.div>

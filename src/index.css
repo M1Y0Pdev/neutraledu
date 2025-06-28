@@ -1,3 +1,116 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/* Aggressively hide YouTube controls */
+.react-player iframe {
+  pointer-events: none !important;
+}
+
+.react-player iframe[src*="youtube"] {
+  pointer-events: auto !important;
+}
+
+/* Hide all YouTube controls */
+.react-player iframe[src*="youtube"] .ytp-chrome-top,
+.react-player iframe[src*="youtube"] .ytp-chrome-bottom,
+.react-player iframe[src*="youtube"] .ytp-pause-overlay,
+.react-player iframe[src*="youtube"] .ytp-watermark,
+.react-player iframe[src*="youtube"] .ytp-show-cards-title,
+.react-player iframe[src*="youtube"] .ytp-large-play-button,
+.react-player iframe[src*="youtube"] .ytp-button,
+.react-player iframe[src*="youtube"] .ytp-controls,
+.react-player iframe[src*="youtube"] .ytp-gradient-top,
+.react-player iframe[src*="youtube"] .ytp-gradient-bottom,
+.react-player iframe[src*="youtube"] .ytp-progress-bar,
+.react-player iframe[src*="youtube"] .ytp-time-display,
+.react-player iframe[src*="youtube"] .ytp-volume-panel,
+.react-player iframe[src*="youtube"] .ytp-settings-button,
+.react-player iframe[src*="youtube"] .ytp-fullscreen-button,
+.react-player iframe[src*="youtube"] .ytp-play-button,
+.react-player iframe[src*="youtube"] .ytp-pause-button {
+  display: none !important;
+  opacity: 0 !important;
+  visibility: hidden !important;
+}
+
+/* Custom slider styles */
+.slider {
+  -webkit-appearance: none;
+  appearance: none;
+  background: transparent;
+  cursor: pointer;
+}
+
+.slider::-webkit-slider-track {
+  background: #4b5563;
+  height: 4px;
+  border-radius: 2px;
+}
+
+.slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  background: #ffffff;
+  height: 12px;
+  width: 12px;
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.slider::-moz-range-track {
+  background: #4b5563;
+  height: 4px;
+  border-radius: 2px;
+}
+
+.slider::-moz-range-thumb {
+  background: #ffffff;
+  height: 12px;
+  width: 12px;
+  border-radius: 50%;
+  cursor: pointer;
+  border: none;
+}
+
+/* Video player hover effects */
+.video-player-container:hover .video-controls {
+  opacity: 1;
+}
+
+.video-controls {
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #f1f1f1;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #c1c1c1;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #a8a8a8;
+}
+
+/* Dark mode scrollbar */
+.dark ::-webkit-scrollbar-track {
+  background: #374151;
+}
+
+.dark ::-webkit-scrollbar-thumb {
+  background: #6b7280;
+}
+
+.dark ::-webkit-scrollbar-thumb:hover {
+  background: #9ca3af;
+} 

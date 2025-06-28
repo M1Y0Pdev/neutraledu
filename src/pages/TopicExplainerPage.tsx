@@ -3,7 +3,7 @@ import { BookOpen, Sparkles, BrainCircuit, Download, Loader } from 'lucide-react
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { toast } from 'react-hot-toast';
-import ai from '../lib/gemini';
+import { generateText } from '../lib/gemini';
 import jsPDF from 'jspdf';
 import html2canvas from 'html2canvas';
 
@@ -63,11 +63,8 @@ const TopicExplainerPage: React.FC = () => {
 
             const userPrompt = `Konu: ${topic}, Sınıf Seviyesi: ${gradeLevel}`;
             
-            const model = ai.getGenerativeModel({ model: "gemini-1.5-flash" });
-            const result = await model.generateContent([systemPrompt, userPrompt]);
-            
-            const response = result.response;
-            const text = response.text();
+            const fullPrompt = `${systemPrompt}\n\n${userPrompt}`;
+            const text = await generateText(fullPrompt);
 
             setGeneratedContent(text);
             toast.dismiss(toastId);

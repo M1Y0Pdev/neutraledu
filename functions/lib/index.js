@@ -42,11 +42,15 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 var _a;
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.generateInteractiveQuestions = exports.getYouTubeTranscript = exports.generateLessonFromKeywords = void 0;
+exports.uploadFileAsBase64 = exports.generateInteractiveQuestions = exports.getYouTubeTranscript = exports.generateLessonFromKeywords = void 0;
 const functions = __importStar(require("firebase-functions"));
 const logger = __importStar(require("firebase-functions/logger"));
+const admin = __importStar(require("firebase-admin"));
 const generative_ai_1 = require("@google/generative-ai");
 const youtube_transcript_1 = require("youtube-transcript");
+// Initialize Firebase Admin
+admin.initializeApp();
+const storage = admin.storage();
 // Initialize Gemini
 let genAI;
 const API_KEY = (_a = functions.config().gemini) === null || _a === void 0 ? void 0 : _a.key;
@@ -160,6 +164,37 @@ exports.generateInteractiveQuestions = functions.https.onCall(async (data, conte
     catch (error) {
         logger.error("Interactive questions generation failed:", error);
         throw new functions.https.HttpsError("internal", "Failed to generate interactive questions from the transcript.", error.message);
+    }
+});
+exports.uploadFileAsBase64 = functions.runWith({ memory: "1GB" }).https.onCall(async (data, context) => {
+    if (!context.auth) {
+        throw new functions.https.HttpsError("unauthenticated", "Dosya yüklemek için giriş yapmış olmalısınız.");
+    }
+    const { fileData, filePath, fileType } = data;
+    if (!fileData || !filePath || !fileType) {
+        throw new functions.https.HttpsError("invalid-argument", "Fonksiyon 'fileData', 'filePath' ve 'fileType' argümanları ile çağrılmalıdır.");
+    }
+    try {
+        const base64EncodedString = fileData.split(';base64,').pop();
+        if (!base64EncodedString) {
+            throw new Error('Geçersiz Base64 formatı.');
+        }
+        const fileBuffer = Buffer.from(base64EncodedString, 'base64');
+        const bucket = storage.bucket("gs://neutraledumain.appspot.com");
+        const file = bucket.file(filePath);
+        await file.save(fileBuffer, {
+            metadata: {
+                contentType: fileType,
+            },
+        });
+        // Make the file public and return the URL
+        await file.makePublic();
+        const publicUrl = file.publicUrl();
+        return { downloadURL: publicUrl };
+    }
+    catch (error) {
+        logger.error("Base64 upload failed:", error);
+        throw new functions.https.HttpsError("internal", "Dosya yüklenemedi.", error.message);
     }
 });
 //# sourceMappingURL=index.js.map

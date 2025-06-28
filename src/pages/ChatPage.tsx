@@ -5,7 +5,7 @@ import { db } from '../lib/firebase';
 import { doc, updateDoc, arrayUnion, onSnapshot } from 'firebase/firestore';
 import { Send, Loader, ArrowLeft, Bot, User, Paperclip } from 'lucide-react';
 import toast from 'react-hot-toast';
-import genAI from '../lib/gemini';
+import { generateText } from '../lib/gemini';
 
 interface Message {
     role: 'user' | 'model';
@@ -85,40 +85,34 @@ const ChatPage = () => {
         };
 
         const coachRef = doc(db, 'coaches', coachId);
-        // Optimistic UI update for user message
         setCoach(prev => prev ? { ...prev, chatHistory: [...prev.chatHistory, userMessage] } : null);
-        
         try {
-            // Update Firestore with user message in the background
             await updateDoc(coachRef, { chatHistory: arrayUnion(userMessage) });
 
             const systemPrompt = `Sen, ${coach.coachName} adında bir kişisel öğrenci koçusun. Kullanıcının hedefi ${coach.examType} sınavını ${coach.targetDate} tarihinde başarmak. Odaklanacağınız dersler: ${coach.subjects.join(', ')}. İletişim tonun şöyle olmalı: ${coach.communicationTone.join(', ')}. Kullanıcıyla şu şekillerde etkileşim kurman bekleniyor: ${coach.interactions.join(', ')}. Kişilik özelliklerin: ${coach.personality}. Kısa, net ve samimi cevaplar ver. Kullanıcının sorularına bu kimlikle cevap ver.`;
             
-            const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash', systemInstruction: systemPrompt });
+            // Chat history'yi string formatına çevir
+            const chatHistoryText = coach.chatHistory.map(msg => 
+                `${msg.role === 'user' ? 'Öğrenci' : 'Koç'}: ${msg.content}`
+            ).join('\n');
             
-            const chat = model.startChat({
-                history: coach.chatHistory.map(msg => ({
-                    role: msg.role,
-                    parts: [{ text: msg.content }]
-                })),
-                generationConfig: {
-                    maxOutputTokens: 2000,
-                },
-            });
+            const fullPrompt = `${systemPrompt}\n\nSohbet geçmişi:\n${chatHistoryText}\n\nÖğrenci: ${userMessageContent}\n\nKoç:`;
 
-            const result = await chat.sendMessage(userMessageContent);
-            const response = result.response;
-            const text = response.text();
+            const responseText = await generateText(fullPrompt);
             
-            const aiMessage: Message = { role: 'model', content: text, timestamp: new Date() };
-
-            // Update Firestore with AI's response
+            // Eğer offline fallback mesajı geldiyse kullanıcıya bilgi ver
+            if (responseText.includes('API kullanım limitimiz dolmuş')) {
+                toast.success("API kullanım limiti aşıldı. Koç geçici olarak offline modda çalışıyor.");
+            }
+            
+            const aiMessage: Message = { role: 'model', content: responseText, timestamp: new Date() };
             await updateDoc(coachRef, { chatHistory: arrayUnion(aiMessage) });
-
-        } catch (error) {
+        } catch (error: any) {
             console.error("AI cevabı alınırken hata oluştu:", error);
-            toast.error("Üzgünüm, AI koçunuz şu anda cevap veremiyor.");
-            // Revert optimistic update on error
+            
+            // Artık generateText fonksiyonu hata fırlatmıyor, bu kısım sadece diğer hatalar için
+            toast.error("Üzgünüm, bir hata oluştu. Lütfen daha sonra tekrar deneyin.");
+            
             setCoach(prev => prev ? { ...prev, chatHistory: prev.chatHistory.slice(0, -1) } : null);
         } finally {
             setIsSending(false);

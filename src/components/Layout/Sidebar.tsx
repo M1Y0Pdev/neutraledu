@@ -3,7 +3,7 @@ import { useLocation, Link } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
-    LayoutDashboard, BookOpen, MessageSquare, BrainCircuit, Shield, ChevronLeft, ChevronRight
+    LayoutDashboard, BookOpen, MessageSquare, BrainCircuit, Shield, ChevronLeft, ChevronRight, Trophy
 } from 'lucide-react';
 import logo from '/logo.jpg';
 
@@ -31,6 +31,7 @@ const Sidebar: React.FC<SidebarProps> = ({ isOpen, setIsOpen }) => {
         { name: 'Dersler', path: '/dashboard/lessons', icon: BookOpen },
         { name: 'AI Koç', path: '/dashboard/coaches', icon: MessageSquare },
         { name: 'Soru Çöz', path: '/dashboard/question-solver', icon: BrainCircuit },
+        { name: 'Skor Tablosu', path: '/dashboard/leaderboard', icon: Trophy },
     ];
     
     const adminNav = userData?.role === 'admin' ? [

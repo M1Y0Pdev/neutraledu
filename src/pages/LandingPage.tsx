@@ -1,12 +1,12 @@
 import React from 'react';
 import { Link } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { ArrowRight, Zap, BookOpen, BrainCircuit } from 'lucide-react';
+import { ArrowRight, Zap, BookOpen, BrainCircuit, Sun, Moon } from 'lucide-react';
 import { useTheme } from '../contexts/ThemeContext';
 import { GraduationCap } from 'lucide-react';
 
 const LandingPage: React.FC = () => {
-    const { isDark } = useTheme();
+    const { isDark, toggleTheme } = useTheme();
 
     return (
         <div className={`min-h-screen ${isDark ? 'dark' : ''} bg-white dark:bg-gray-900 text-gray-800 dark:text-gray-100`}>
@@ -16,8 +16,23 @@ const LandingPage: React.FC = () => {
                     <GraduationCap className="h-8 w-8 text-primary-600" />
                     <span className="text-xl font-bold">NeutralEdu</span>
                 </div>
-                <div>
-                    <Link to="/login" className="text-gray-600 dark:text-gray-300 hover:text-primary-600 dark:hover:text-primary-400 mr-4">Giriş Yap</Link>
+                <div className="flex items-center space-x-4">
+                    {/* Tema Değiştirme Butonu */}
+                    <button
+                        onClick={toggleTheme}
+                        className="p-2 rounded-full text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors"
+                        aria-label="Toggle Theme"
+                        title={isDark ? "Açık temaya geç" : "Koyu temaya geç"}
+                    >
+                        {isDark ? (
+                            <Sun className="h-5 w-5" />
+                        ) : (
+                            <Moon className="h-5 w-5" />
+                        )}
+                    </button>
+                    
+                    <Link to="/dashboard/leaderboard" className="text-gray-600 dark:text-gray-300 hover:text-primary-600 dark:hover:text-primary-400">Skor Tablosu</Link>
+                    <Link to="/login" className="text-gray-600 dark:text-gray-300 hover:text-primary-600 dark:hover:text-primary-400">Giriş Yap</Link>
                     <Link to="/register" className="bg-primary-600 text-white px-4 py-2 rounded-lg hover:bg-primary-700 transition-colors">Ücretsiz Başla</Link>
                 </div>
             </header>

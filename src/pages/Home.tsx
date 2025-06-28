@@ -13,7 +13,8 @@ import {
   Star,
   TrendingUp,
   Clock,
-  Bot
+  Bot,
+  Flame
 } from 'lucide-react';
 
 const Home: React.FC = () => {
@@ -204,7 +205,10 @@ const Home: React.FC = () => {
                     <div className="text-sm text-primary-200">XP</div>
                   </div>
                   <div className="text-center">
-                    <div className="text-2xl font-bold">{userData?.streak || 0}</div>
+                    <div className="flex items-center justify-center gap-1">
+                      <Flame className="w-5 h-5 text-orange-400" />
+                      <div className="text-2xl font-bold">{userData?.streak || 0}</div>
+                    </div>
                     <div className="text-sm text-primary-200">Günlük Seri</div>
                   </div>
                   <div className="text-center">

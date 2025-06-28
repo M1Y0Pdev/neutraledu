@@ -12,10 +12,14 @@ import * as logger from "firebase-functions/logger";
 import * as admin from "firebase-admin";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import { YoutubeTranscript } from 'youtube-transcript';
+import * as cors from 'cors';
 
 // Initialize Firebase Admin
 admin.initializeApp();
 const storage = admin.storage();
+
+// Initialize CORS middleware
+const corsHandler = cors({ origin: true });
 
 // Initialize Gemini
 let genAI: GoogleGenerativeAI;

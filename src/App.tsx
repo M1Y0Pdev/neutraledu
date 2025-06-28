@@ -13,10 +13,12 @@ import LoadingSpinner from './components/Common/LoadingSpinner';
 import AdminPage from './pages/AdminPage';
 import ChatPage from './pages/ChatPage';
 import LessonsPage from './pages/LessonsPage';
+import LessonDetailPage from './pages/LessonDetailPage';
 import LandingPage from './pages/LandingPage';
 import ProfilePage from './pages/ProfilePage';
 import TopicExplainerPage from './pages/TopicExplainerPage';
 import CoachListPage from './pages/CoachListPage';
+import LeaderboardPage from './pages/LeaderboardPage';
 
 // Placeholder for upcoming features
 const ComingSoon = ({ title }: { title: string }) => (
@@ -90,8 +92,10 @@ function App() {
                 <Route path="coach-generator" element={<ProtectedRoute><CoachGenerator /></ProtectedRoute>} />
                 <Route path="chat/:coachId" element={<ChatPage />} />
                 <Route path="lessons" element={<ProtectedRoute><LessonsPage /></ProtectedRoute>} />
+                <Route path="lessons/:lessonId" element={<ProtectedRoute><LessonDetailPage /></ProtectedRoute>} />
                 <Route path="topic-explainer" element={<ProtectedRoute><TopicExplainerPage /></ProtectedRoute>} />
                 <Route path="profile" element={<ProtectedRoute><ProfilePage /></ProtectedRoute>} />
+                <Route path="leaderboard" element={<LeaderboardPage />} />
                 <Route path="quiz" element={<ComingSoon title="Test Çöz" />} />
                 <Route path="flashcards" element={<ComingSoon title="Kartlar" />} />
                 <Route path="coaches" element={<ProtectedRoute><CoachListPage /></ProtectedRoute>} />

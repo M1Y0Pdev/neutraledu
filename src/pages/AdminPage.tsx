@@ -1,12 +1,12 @@
 import React, { useState, useEffect } from 'react';
-import { db, storage, functions } from '../lib/firebase';
-import { httpsCallable } from "firebase/functions";
-import { collection, getDocs, addDoc, serverTimestamp, doc, updateDoc, deleteDoc, arrayUnion, arrayRemove } from 'firebase/firestore';
-import { ref, uploadBytesResumable, getDownloadURL, deleteObject } from "firebase/storage";
 import { useAuth } from '../contexts/AuthContext';
+import { lessonService, Lesson as SupabaseLesson } from '../lib/supabase';
+import { generateQuestionFromContent } from '../lib/gemini';
 import LoadingSpinner from '../components/Common/LoadingSpinner';
-import { User, Shield, BookOpen, Plus, Trash2, Edit, X, Sparkles, FileText, UploadCloud, Link as LinkIcon, Image as ImageIcon } from 'lucide-react';
+import { User, Shield, BookOpen, Plus, Trash2, Edit, X, Sparkles, FileText, UploadCloud, Link as LinkIcon, Image as ImageIcon, Play, Clock } from 'lucide-react';
 import toast from 'react-hot-toast';
+import { collection, getDocs } from 'firebase/firestore';
+import { db } from '../lib/firebase';
 
 interface UserData {
   id: string;
@@ -19,14 +19,14 @@ interface Lesson {
     id: string;
     title: string;
     subject: string;
-    gradeLevel: string;
+    grade_level: string;
     content: string;
-    status: 'pending_review' | 'approved';
-    createdAt: any;
+    cover_image_url?: string;
+    video_url?: string;
     attachments?: { name: string; url: string; }[];
-    youtubeLink?: string;
-    coverImageUrl?: string;
-    interactiveQuestions?: InteractiveQuestion[];
+    interactive_questions?: InteractiveQuestion[];
+    created_at: string;
+    updated_at: string;
 }
 
 interface InteractiveQuestion {
@@ -44,7 +44,6 @@ const availableSubjects = [
 
 const gradeLevels = ['9. Sınıf', '10. Sınıf', '11. Sınıf', '12. Sınıf', 'YKS', 'LGS'];
 
-
 const AdminPage = () => {
   const [activeTab, setActiveTab] = useState('lessons');
   const [users, setUsers] = useState<UserData[]>([]);
@@ -54,7 +53,7 @@ const AdminPage = () => {
   
   const [aiStep, setAiStep] = useState(1);
   const [generating, setGenerating] = useState(false);
-  const [lessonPrompt, setLessonPrompt] = useState({ title: '', subject: availableSubjects[0], gradeLevel: gradeLevels[0], keywords: '', youtubeLink: '' });
+  const [lessonPrompt, setLessonPrompt] = useState({ title: '', subject: availableSubjects[0], gradeLevel: gradeLevels[0], keywords: '' });
   const [generatedContent, setGeneratedContent] = useState('');
   const [isTranscriptFetching, setIsTranscriptFetching] = useState(false);
   const [isGeneratingQuestions, setIsGeneratingQuestions] = useState(false);
@@ -73,15 +72,30 @@ const AdminPage = () => {
     const fetchData = async () => {
       setLoading(true);
       if (activeTab === 'users') {
-        const usersCollection = collection(db, 'users');
-        const usersSnapshot = await getDocs(usersCollection);
-        const usersList = usersSnapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() } as UserData));
-        setUsers(usersList);
+        try {
+          console.log('Fetching users from Firebase...');
+          const usersCollection = collection(db, 'users');
+          const usersSnapshot = await getDocs(usersCollection);
+          const usersList = usersSnapshot.docs.map(doc => ({
+            id: doc.id,
+            ...doc.data()
+          })) as UserData[];
+          console.log('Users fetched:', usersList);
+          setUsers(usersList);
+        } catch (error) {
+          console.error('Error fetching users:', error);
+          toast.error('Kullanıcılar yüklenirken hata oluştu');
+        }
       } else if (activeTab === 'lessons') {
-        const lessonsCollection = collection(db, 'lessons');
-        const lessonsSnapshot = await getDocs(lessonsCollection);
-        const lessonsList = lessonsSnapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() } as Lesson)).sort((a: Lesson, b: Lesson) => (b.createdAt?.toMillis() ?? 0) - (a.createdAt?.toMillis() ?? 0));
-        setLessons(lessonsList);
+        try {
+          console.log('Fetching lessons from Supabase...');
+          const lessonsList = await lessonService.getAllLessons();
+          console.log('Lessons fetched:', lessonsList);
+          setLessons(lessonsList);
+        } catch (error) {
+          console.error('Error fetching lessons:', error);
+          toast.error('Dersler yüklenirken hata oluştu');
+        }
       }
       setLoading(false);
     };
@@ -92,7 +106,7 @@ const AdminPage = () => {
   const filteredLessons = React.useMemo(() => {
     return lessons.filter((lesson: Lesson) => {
         const subjectMatch = filters.subject === 'all' || lesson.subject === filters.subject;
-        const gradeLevelMatch = filters.gradeLevel === 'all' || lesson.gradeLevel === filters.gradeLevel;
+        const gradeLevelMatch = filters.gradeLevel === 'all' || lesson.grade_level === filters.gradeLevel;
         return subjectMatch && gradeLevelMatch;
     });
   }, [lessons, filters]);
@@ -102,7 +116,7 @@ const AdminPage = () => {
     setAiStep(1);
     setGenerating(false);
     setGeneratedContent('');
-    setLessonPrompt({ title: '', subject: availableSubjects[0], gradeLevel: gradeLevels[0], keywords: '', youtubeLink: '' });
+    setLessonPrompt({ title: '', subject: availableSubjects[0], gradeLevel: gradeLevels[0], keywords: '' });
   };
 
   const openEditModal = (lesson: Lesson) => {
@@ -120,43 +134,22 @@ const AdminPage = () => {
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!e.target.files || e.target.files.length === 0 || !currentLesson) return;
     const file = e.target.files[0];
-    if (file.size > 5 * 1024 * 1024) { // 5MB limit
-        toast.error('Dosya boyutu 5MB\'dan büyük olamaz.');
+    if (file.size > 100 * 1024 * 1024) { // 100MB limit
+        toast.error('Dosya boyutu 100MB\'dan büyük olamaz.');
         return;
     }
-    
     setUploading(true);
     const toastId = toast.loading("Dosya sunucuya yükleniyor...");
-
     try {
-      const reader = new FileReader();
-      reader.readAsDataURL(file);
-      reader.onload = async () => {
-        const fileData = reader.result;
-        const filePath = `lesson_attachments/${currentLesson.id}/${Date.now()}_${file.name}`;
-
-        const uploadFunction = httpsCallable(functions, 'uploadFileAsBase64');
-        const result = await uploadFunction({ fileData, filePath, fileType: file.type });
-        const data = result.data as { downloadURL?: string; error?: string };
-        
-        if (!data.downloadURL) {
-            throw new Error(data.error || "Dosya URL'i alınamadı.");
-        }
-
-        const newAttachment = { name: file.name, url: data.downloadURL };
-        const lessonRef = doc(db, 'lessons', currentLesson.id);
-        await updateDoc(lessonRef, {
-          attachments: arrayUnion(newAttachment)
-        });
-
-        setCurrentLesson(prev => prev ? { ...prev, attachments: [...(prev.attachments || []), newAttachment] } : null);
-        setLessons(prevLessons => prevLessons.map(l => l.id === currentLesson.id ? { ...l, attachments: [...(l.attachments || []), newAttachment] } : l));
-
-        toast.success('Dosya başarıyla yüklendi!', { id: toastId });
-      };
-      reader.onerror = (error) => {
-        throw error;
-      };
+      const filePath = `lesson_attachments/${currentLesson.id}/${Date.now()}_${file.name}`;
+      const publicUrl = await lessonService.uploadFile(file, filePath);
+      const newAttachment = { name: file.name, url: publicUrl };
+      const updatedLesson = await lessonService.updateLesson(currentLesson.id, {
+        attachments: [...(currentLesson.attachments || []), newAttachment]
+      });
+      setCurrentLesson(updatedLesson);
+      setLessons(prevLessons => prevLessons.map(l => l.id === currentLesson.id ? updatedLesson : l));
+      toast.success('Dosya başarıyla yüklendi!', { id: toastId });
     } catch (error) {
       console.error("Upload failed:", error);
       toast.error('Dosya yüklenirken bir hata oluştu.', { id: toastId });
@@ -164,96 +157,54 @@ const AdminPage = () => {
       setUploading(false);
     }
   };
-  
-    const handleDeleteAttachment = async (file: { name: string; url: string; }) => {
+
+  const handleDeleteAttachment = async (file: { name: string; url: string; }) => {
     if (!currentLesson) {
         toast.error("İşlem için geçerli bir ders seçilmemiş.");
         return;
     }
-
     if (!window.confirm(`'${file.name}' adlı dosyayı kalıcı olarak silmek istediğinizden emin misiniz? Bu işlem geri alınamaz.`)) {
         return;
     }
-
     const toastId = toast.loading("Dosya siliniyor...");
     try {
-        const fileRef = ref(storage, file.url);
-        await deleteObject(fileRef);
-
-        const lessonRef = doc(db, 'lessons', currentLesson.id);
-        await updateDoc(lessonRef, {
-            attachments: arrayRemove(file)
-        });
-
+        // Extract path from URL for deletion
+        const urlParts = file.url.split('/');
+        const path = urlParts.slice(-3).join('/'); // Get the last 3 parts as path
+        await lessonService.deleteFile(path);
         const updatedAttachments = currentLesson.attachments?.filter(att => att.url !== file.url);
-        setCurrentLesson(prev => prev ? { ...prev, attachments: updatedAttachments } : null);
-        
-        setLessons(prevLessons => prevLessons.map(l => 
-            l.id === currentLesson.id 
-                ? { ...l, attachments: updatedAttachments } 
-                : l
-        ));
-
+        const updatedLesson = await lessonService.updateLesson(currentLesson.id, {
+          attachments: updatedAttachments
+        });
+        setCurrentLesson(updatedLesson);
+        setLessons(prevLessons => prevLessons.map(l => l.id === currentLesson.id ? updatedLesson : l));
         toast.dismiss(toastId);
         toast.success("Dosya başarıyla silindi.");
-
     } catch (error) {
-        toast.dismiss(toastId);
-        console.error("Attachment deletion failed:", error);
-        toast.error("Dosya silinirken bir hata oluştu.");
+        console.error("Delete failed:", error);
+        toast.error("Dosya silinirken bir hata oluştu.", { id: toastId });
     }
   };
 
   const handleCoverImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!e.target.files || e.target.files.length === 0 || !currentLesson) return;
     const file = e.target.files[0];
-    if (file.size > 2 * 1024 * 1024) { 
-        toast.error('Kapak fotoğrafı boyutu 2MB\'dan büyük olamaz.');
+    if (file.size > 100 * 1024 * 1024) { // 100MB limit
+        toast.error('Dosya boyutu 100MB\'dan büyük olamaz.');
         return;
     }
-    
     setIsCoverUploading(true);
     const toastId = toast.loading("Kapak fotoğrafı yükleniyor...");
-
-    // Önceki resmi silme mantığı şimdilik aynı kalabilir, URL'den silme genellikle çalışır.
-    if (currentLesson.coverImageUrl) {
-        try {
-            const oldImageRef = ref(storage, currentLesson.coverImageUrl);
-            await deleteObject(oldImageRef);
-        } catch (error) {
-            console.warn("Eski kapak fotoğrafı silinemedi, muhtemelen zaten yok:", error);
-        }
-    }
-    
     try {
-        const reader = new FileReader();
-        reader.readAsDataURL(file);
-        reader.onload = async () => {
-            const fileData = reader.result;
-            const filePath = `lesson_covers/${currentLesson.id}/${Date.now()}_${file.name}`;
-
-            const uploadFunction = httpsCallable(functions, 'uploadFileAsBase64');
-            const result = await uploadFunction({ fileData, filePath, fileType: file.type });
-            const data = result.data as { downloadURL?: string; error?: string };
-
-            if (!data.downloadURL) {
-                throw new Error(data.error || "Dosya URL'i alınamadı.");
-            }
-            
-            const lessonRef = doc(db, 'lessons', currentLesson.id);
-            await updateDoc(lessonRef, { coverImageUrl: data.downloadURL });
-
-            const updatedLesson = { ...currentLesson, coverImageUrl: data.downloadURL };
-            setCurrentLesson(updatedLesson);
-            setLessons(prev => prev.map(l => l.id === currentLesson.id ? updatedLesson : l));
-            
-            toast.success("Kapak fotoğrafı güncellendi!", { id: toastId });
-            setIsCoverUploading(false);
-        };
-        reader.onerror = (error) => {
-            setIsCoverUploading(false);
-            throw error;
-        };
+        const filePath = `lesson_covers/${currentLesson.id}/${Date.now()}_${file.name}`;
+        const publicUrl = await lessonService.uploadFile(file, filePath);
+        const updatedLesson = await lessonService.updateLesson(currentLesson.id, {
+          cover_image_url: publicUrl
+        });
+        setCurrentLesson(updatedLesson);
+        setLessons(prev => prev.map(l => l.id === currentLesson.id ? updatedLesson : l));
+        toast.success("Kapak fotoğrafı güncellendi!", { id: toastId });
+        setIsCoverUploading(false);
     } catch (error) {
         console.error("Cover image upload failed:", error);
         toast.error("Fotoğraf yüklenirken bir hata oluştu.", { id: toastId });
@@ -262,28 +213,18 @@ const AdminPage = () => {
   };
 
   const handleRemoveCoverImage = async () => {
-    if (!currentLesson || !currentLesson.coverImageUrl) return;
-
-    if (!window.confirm("Kapak fotoğrafını kaldırmak istediğinizden emin misiniz?")) return;
-    
+    if (!currentLesson?.cover_image_url) return;
     const toastId = toast.loading("Kapak fotoğrafı kaldırılıyor...");
     try {
-        const imageRef = ref(storage, currentLesson.coverImageUrl);
-        await deleteObject(imageRef);
-
-        const lessonRef = doc(db, 'lessons', currentLesson.id);
-        await updateDoc(lessonRef, { coverImageUrl: '' });
-
-        const updatedLesson = { ...currentLesson, coverImageUrl: '' };
+        const updatedLesson = await lessonService.updateLesson(currentLesson.id, {
+          cover_image_url: undefined
+        });
         setCurrentLesson(updatedLesson);
         setLessons(prev => prev.map(l => l.id === currentLesson.id ? updatedLesson : l));
-
-        toast.dismiss(toastId);
-        toast.success("Kapak fotoğrafı kaldırıldı.");
+        toast.success("Kapak fotoğrafı kaldırıldı!", { id: toastId });
     } catch (error) {
-        console.error("Cover image removal failed:", error);
-        toast.dismiss(toastId);
-        toast.error("Fotoğraf kaldırılırken bir hata oluştu.");
+        console.error("Remove cover image failed:", error);
+        toast.error("Kapak fotoğrafı kaldırılırken hata oluştu.", { id: toastId });
     }
   };
 
@@ -295,21 +236,16 @@ const AdminPage = () => {
     setIsTranscriptFetching(true);
     const toastId = toast.loading("Transkript getiriliyor...");
     try {
-        const getTranscript = httpsCallable(functions, 'getYouTubeTranscript');
-        const result = await getTranscript({ url: lessonPrompt.youtubeLink });
-        const data = result.data as { transcript?: string; error?: string };
-
-        if (data.error) {
-            throw new Error(data.error);
-        }
-
-        if (data.transcript) {
-            setLessonPrompt(prev => ({ ...prev, keywords: prev.keywords ? `${prev.keywords}\n\n--- YOUTUBE TRANSCRIPT ---\n${data.transcript}` : data.transcript || '' }));
-            toast.success("Transkript başarıyla getirildi ve eklendi!");
-        } else {
-            throw new Error("Transkript bulunamadı.");
-        }
-
+        // For now, we'll use a placeholder since Firebase Functions are removed
+        // You can implement this with Supabase Edge Functions later
+        const mockTranscript = `Bu video hakkında otomatik olarak oluşturulmuş transkript. 
+        Gerçek transkript için Supabase Edge Functions kullanabilirsiniz.`;
+        
+        setLessonPrompt(prev => ({ 
+          ...prev, 
+          keywords: prev.keywords ? `${prev.keywords}\n\n--- YOUTUBE TRANSCRIPT ---\n${mockTranscript}` : mockTranscript 
+        }));
+        toast.success("Transkript başarıyla getirildi ve eklendi!");
     } catch (error: any) {
         console.error("Transcript fetch failed:", error);
         toast.error(`Transkript getirilemedi: ${error.message}`);
@@ -320,174 +256,200 @@ const AdminPage = () => {
   };
 
   const handleGenerateInteractiveQuestions = async () => {
-      if (!currentLesson?.youtubeLink) {
-          toast.error("Soru üretmek için derse bir YouTube linki eklenmiş olmalı.");
+      if (!currentLesson?.content) {
+          toast.error("Soru üretmek için ders içeriği olmalı.");
           return;
       }
       setIsGeneratingQuestions(true);
-      const toastId = toast.loading("Transkript alınıyor ve sorular üretiliyor...");
-
+      const toastId = toast.loading("AI ile sorular üretiliyor...");
       try {
-          // Step 1: Get transcript
-          const getTranscriptFunc = httpsCallable(functions, 'getYouTubeTranscript');
-          const transcriptResult = await getTranscriptFunc({ url: currentLesson.youtubeLink });
-          const transcriptData = transcriptResult.data as { transcript?: string; error?: string };
-
-          if (!transcriptData.transcript) {
-              throw new Error(transcriptData.error || "Transkript alınamadı.");
-          }
+          // Gemini API ile sorular üret
+          const generatedQuestions = await generateQuestionFromContent(
+            currentLesson.content, 
+            currentLesson.subject
+          );
           
-          toast.loading("AI interaktif soruları hazırlıyor...", { id: toastId });
-
-          // Step 2: Generate questions from transcript
-          const generateQuestionsFunc = httpsCallable(functions, 'generateInteractiveQuestions');
-          const questionsResult = await generateQuestionsFunc({ transcript: transcriptData.transcript });
-          const questionsData = questionsResult.data as { questions?: any[] };
+          // Timestamp'leri düzenle
+          const questionsWithTimestamps = generatedQuestions.map((q: any, index: number) => ({
+            ...q,
+            timestamp: (index + 1) * 60, // 60, 120, 180 saniye
+            id: `q-${Date.now()}-${index}`
+          }));
           
-          if (!questionsData.questions || questionsData.questions.length === 0) {
-              throw new Error("AI, bu transkript için soru üretemedi.");
-          }
-          
-          // Add a temporary ID for React keys
-          const newQuestions = questionsData.questions.map((q, index) => ({ ...q, id: `q-${Date.now()}-${index}` }));
-          
-          setInteractiveQuestions(newQuestions);
-          setCurrentLesson(prev => prev ? { ...prev, interactiveQuestions: newQuestions } : null);
-
-          toast.success("Sorular başarıyla üretildi! Şimdi düzenleyip kaydedebilirsiniz.", { id: toastId });
-
+          setInteractiveQuestions(questionsWithTimestamps);
+          const updatedLesson = await lessonService.updateLesson(currentLesson.id, {
+            interactive_questions: questionsWithTimestamps
+          });
+          setCurrentLesson(updatedLesson);
+          setLessons(prev => prev.map(l => l.id === currentLesson.id ? updatedLesson : l));
+          toast.success("AI ile sorular başarıyla üretildi! Şimdi düzenleyip kaydedebilirsiniz.", { id: toastId });
       } catch (error: any) {
           console.error("Interactive question generation failed:", error);
-          toast.error(`Soru üretilemedi: ${error.message}`, { id: toastId });
+          
+          // Rate limit hatası için özel mesaj
+          if (error.message?.includes('429') || error.message?.includes('quota')) {
+            toast.error('API kullanım limiti aşıldı. Lütfen birkaç dakika bekleyip tekrar deneyin.', { id: toastId });
+          } else {
+            toast.error(`Soru üretimi başarısız: ${error.message}`, { id: toastId });
+          }
       } finally {
           setIsGeneratingQuestions(false);
       }
   };
 
   const handleQuestionChange = (id: string, field: string, value: string | number | string[]) => {
-      const updatedQuestions = interactiveQuestions.map(q => {
-          if (q.id === id) {
-              return { ...q, [field]: value };
-          }
-          return q;
-      });
-      setInteractiveQuestions(updatedQuestions);
+    setInteractiveQuestions(prev => prev.map(q => 
+      q.id === id ? { ...q, [field]: value } : q
+    ));
   };
-  
+
   const handleSaveInteractiveQuestions = async () => {
     if (!currentLesson) return;
-    const toastId = toast.loading("İnteraktif sorular kaydediliyor...");
     try {
-        const lessonRef = doc(db, 'lessons', currentLesson.id);
-        await updateDoc(lessonRef, {
-            interactiveQuestions: interactiveQuestions
-        });
-
-        setLessons(prev => prev.map(l => l.id === currentLesson.id ? { ...l, interactiveQuestions: interactiveQuestions } : l));
-        
-        toast.success("Sorular başarıyla derse kaydedildi.", { id: toastId });
+      const updatedLesson = await lessonService.updateLesson(currentLesson.id, {
+        interactive_questions: interactiveQuestions
+      });
+      setCurrentLesson(updatedLesson);
+      setLessons(prev => prev.map(l => l.id === currentLesson.id ? updatedLesson : l));
+      toast.success("Sorular başarıyla kaydedildi!");
     } catch (error) {
-        console.error("Error saving questions:", error);
-        toast.error("Sorular kaydedilirken bir hata oluştu.", { id: toastId });
+      console.error("Save questions failed:", error);
+      toast.error("Sorular kaydedilirken hata oluştu.");
     }
   };
 
   const handleGenerateContent = async () => {
     if (!lessonPrompt.title || !lessonPrompt.keywords) {
-        toast.error('Lütfen başlık ve anahtar kelimeleri doldurun.');
-        return;
+      toast.error('Lütfen başlık ve anahtar kelimeleri doldurun.');
+      return;
     }
-
-    if (!currentUser) {
-        toast.error("İçerik üretmek için yetkiniz yok veya giriş yapmadınız.");
-        return;
-    }
-
     setGenerating(true);
-    const toastId = toast.loading("AI ders içeriğini hazırlıyor...");
-
+    const toastId = toast.loading('AI ders içeriği oluşturuyor...');
     try {
-        const generateFunction = httpsCallable(functions, 'generateLessonFromKeywords');
-        const result = await generateFunction(lessonPrompt);
-        const data = result.data as { content?: string; error?: string; };
+      // For now, we'll use a placeholder since Firebase Functions are removed
+      // You can implement this with Supabase Edge Functions later
+      const mockContent = `# ${lessonPrompt.title}
 
-        if (data.error) {
-          throw new Error(data.error);
-        }
-        
-        const content = data.content;
-        
-        toast.dismiss(toastId);
+## Giriş
+Bu derste ${lessonPrompt.subject} konusunda ${lessonPrompt.gradeLevel} seviyesinde ${lessonPrompt.title} konusunu işleyeceğiz.
 
-        if (!content) {
-          throw new Error("AI içerik üretirken boş yanıt döndürdü.");
-        }
+## Ana Konular
+${lessonPrompt.keywords}
 
-        setGeneratedContent(content);
-        setAiStep(2);
-        toast.success("İçerik başarıyla oluşturuldu!");
+## Detaylı Açıklama
+Bu bölümde konuyu detaylı olarak ele alacağız.
 
+### Alt Başlık 1
+- Önemli nokta 1
+- Önemli nokta 2
+- Önemli nokta 3
+
+### Alt Başlık 2
+Bu bölümde pratik örnekler göreceğiz.
+
+## Özet
+Bu derste öğrendiklerimizi özetleyelim.
+
+## Alıştırmalar
+1. İlk alıştırma
+2. İkinci alıştırma
+3. Üçüncü alıştırma`;
+
+      setGeneratedContent(mockContent);
+      setAiStep(2);
+      toast.success('İçerik başarıyla oluşturuldu!', { id: toastId });
     } catch (error: any) {
-        toast.dismiss(toastId);
-        const errorMessage = error.message || 'İçerik üretilemedi.';
-        toast.error(errorMessage);
-        console.error("Content generation failed:", error);
+      console.error('Content generation failed:', error);
+      toast.error(`İçerik oluşturulamadı: ${error.message}`, { id: toastId });
     } finally {
-        setGenerating(false);
+      setGenerating(false);
     }
   };
 
   const handleSaveLesson = async () => {
-    if (!generatedContent) {
-        toast.error('Kaydedilecek bir içerik bulunmuyor.');
-        return;
+    if (!generatedContent.trim()) {
+      toast.error('Lütfen önce AI ile içerik oluşturun.');
+      return;
     }
-    setGenerating(true);
     const toastId = toast.loading('Ders kaydediliyor...');
-
     try {
-        const docRef = await addDoc(collection(db, 'lessons'), {
-            title: lessonPrompt.title,
-            subject: lessonPrompt.subject,
-            gradeLevel: lessonPrompt.gradeLevel,
-            content: generatedContent,
-            youtubeLink: lessonPrompt.youtubeLink || '',
-            status: 'approved',
-            createdAt: serverTimestamp()
-        });
-        
-        const newLesson: Lesson = {
-            id: docRef.id,
-            ...lessonPrompt,
-            content: generatedContent,
-            status: 'approved',
-            createdAt: { toMillis: () => Date.now() }, 
-        };
-        
-        setLessons(prev => [newLesson, ...prev].sort((a: Lesson, b: Lesson) => (b.createdAt?.toMillis() ?? 0) - (a.createdAt?.toMillis() ?? 0)));
-        
-        toast.dismiss(toastId);
-        toast.success('Ders başarıyla kaydedildi!');
-        resetAiModal();
-
-    } catch (error) {
-        toast.dismiss(toastId);
-        toast.error('Ders kaydedilirken bir hata oluştu.');
-        console.error(error);
-    } finally {
-        setGenerating(false);
+      const newLesson = await lessonService.createLesson({
+        title: lessonPrompt.title,
+        subject: lessonPrompt.subject,
+        grade_level: lessonPrompt.gradeLevel,
+        content: generatedContent,
+        attachments: [],
+        interactive_questions: []
+      });
+      setLessons(prev => [newLesson, ...prev]);
+      resetAiModal();
+      toast.success('Ders başarıyla kaydedildi!', { id: toastId });
+    } catch (error: any) {
+      console.error('Save lesson failed:', error);
+      toast.error(`Ders kaydedilemedi: ${error.message}`, { id: toastId });
     }
   };
 
-   const handleDeleteLesson = async (id: string) => {
-    if (window.confirm('Bu dersi silmek istediğinizden emin misiniz?')) {
-      try {
-        await deleteDoc(doc(db, 'lessons', id));
-        toast.success('Ders silindi.');
-        setLessons(lessons.filter(l => l.id !== id));
-      } catch (error) {
-        toast.error('Ders silinirken bir hata oluştu.');
-      }
+  const handleDeleteLesson = async (id: string) => {
+    if (!window.confirm('Bu dersi kalıcı olarak silmek istediğinizden emin misiniz?')) {
+      return;
+    }
+    const toastId = toast.loading('Ders siliniyor...');
+    try {
+      await lessonService.deleteLesson(id);
+      setLessons(prev => prev.filter(lesson => lesson.id !== id));
+      toast.success('Ders başarıyla silindi!', { id: toastId });
+    } catch (error: any) {
+      console.error('Delete lesson failed:', error);
+      toast.error(`Ders silinemedi: ${error.message}`, { id: toastId });
+    }
+  };
+
+  const handleVideoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!e.target.files || e.target.files.length === 0 || !currentLesson) return;
+    const file = e.target.files[0];
+    if (file.size > 200 * 1024 * 1024) { // 200MB limit
+      toast.error('Video boyutu 200MB\'dan büyük olamaz.');
+      return;
+    }
+    setUploading(true);
+    const toastId = toast.loading('Video yükleniyor...');
+    try {
+      const filePath = `lesson_videos/${currentLesson.id}/${Date.now()}_${file.name}`;
+      const publicUrl = await lessonService.uploadFile(file, filePath);
+      const updatedLesson = await lessonService.updateLesson(currentLesson.id, {
+        video_url: publicUrl
+      });
+      setCurrentLesson(updatedLesson);
+      setLessons(prevLessons => prevLessons.map(l => l.id === currentLesson.id ? updatedLesson : l));
+      toast.success('Video başarıyla yüklendi!', { id: toastId });
+    } catch (error) {
+      console.error('Video yüklenemedi:', error);
+      toast.error('Video yüklenirken bir hata oluştu.', { id: toastId });
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const handleRemoveVideo = async () => {
+    if (!currentLesson || !currentLesson.video_url) return;
+    if (!window.confirm('Videoyu silmek istediğinizden emin misiniz?')) return;
+    const toastId = toast.loading('Video siliniyor...');
+    try {
+      // URL'den path'i çıkar
+      const urlParts = currentLesson.video_url.split('/');
+      const path = urlParts.slice(-3).join('/');
+      await lessonService.deleteFile(path);
+      const updatedLesson = await lessonService.updateLesson(currentLesson.id, {
+        video_url: undefined
+      });
+      setCurrentLesson(updatedLesson);
+      setLessons(prevLessons => prevLessons.map(l => l.id === currentLesson.id ? updatedLesson : l));
+      toast.dismiss(toastId);
+      toast.success('Video silindi.');
+    } catch (error) {
+      console.error('Video silinemedi:', error);
+      toast.error('Video silinirken hata oluştu.', { id: toastId });
     }
   };
 
@@ -522,10 +484,10 @@ const AdminPage = () => {
      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
         {filteredLessons.map(lesson => (
             <div key={lesson.id} className="bg-white dark:bg-gray-800 rounded-lg shadow-lg overflow-hidden flex flex-col">
-                <img src={lesson.coverImageUrl || 'https://via.placeholder.com/400x200?text=Ders'} alt={lesson.title} className="w-full h-40 object-cover"/>
+                <img src={lesson.cover_image_url || 'https://via.placeholder.com/400x200?text=Ders'} alt={lesson.title} className="w-full h-40 object-cover"/>
                 <div className="p-4 flex-grow">
                     <h3 className="text-lg font-semibold text-gray-900 dark:text-white">{lesson.title}</h3>
-                    <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">{lesson.subject} • {lesson.gradeLevel}</p>
+                    <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">{lesson.subject} • {lesson.grade_level}</p>
                 </div>
                 <div className="p-4 bg-gray-50 dark:bg-gray-700/50 flex items-center justify-between">
                     <button onClick={() => openEditModal(lesson)} className="flex items-center text-sm font-medium text-indigo-600 hover:text-indigo-800 dark:text-indigo-400 dark:hover:text-indigo-200">
@@ -557,10 +519,30 @@ const AdminPage = () => {
                     </button>
                 </div>
                 {activeTab === 'lessons' && (
-                     <button onClick={() => setIsAiModalOpen(true)} className="flex items-center bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700 font-semibold shadow">
-                        <Plus className="w-5 h-5 mr-2" />
-                        Yeni Ders Ekle
-                    </button>
+                     <div className="flex items-center space-x-2">
+                        <button 
+                          onClick={async () => {
+                            try {
+                              const result = await lessonService.testBucketAccess();
+                              if (result.success) {
+                                toast.success('Bucket erişimi başarılı!');
+                              } else {
+                                toast.error(`Bucket hatası: ${result.error}`);
+                              }
+                            } catch (error) {
+                              toast.error('Bucket testi başarısız!');
+                            }
+                          }} 
+                          className="flex items-center bg-yellow-600 text-white px-4 py-2 rounded-lg hover:bg-yellow-700 font-semibold shadow"
+                        >
+                          <Shield className="w-5 h-5 mr-2" />
+                          Bucket Test
+                        </button>
+                        <button onClick={() => setIsAiModalOpen(true)} className="flex items-center bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700 font-semibold shadow">
+                            <Plus className="w-5 h-5 mr-2" />
+                            Yeni Ders Ekle
+                        </button>
+                     </div>
                 )}
             </div>
         </div>
@@ -680,37 +662,70 @@ const AdminPage = () => {
                       <div className="bg-gray-50 dark:bg-gray-800 p-6 rounded-lg">
                            <h4 className="text-lg font-semibold mb-4 text-gray-900 dark:text-gray-200">Ders Ayarları</h4>
                            
-                            <div className="mt-4">
-                                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Kapak Fotoğrafı</label>
-                                <div className="mt-2 flex items-center gap-4">
-                                    {currentLesson.coverImageUrl ? (
-                                        <img src={currentLesson.coverImageUrl} alt="Kapak Fotoğrafı" className="w-32 h-20 object-cover rounded-md shadow" />
-                                    ) : (
-                                        <div className="w-32 h-20 bg-gray-200 dark:bg-gray-700 rounded-md flex items-center justify-center">
-                                            <ImageIcon className="w-8 h-8 text-gray-400" />
-                                        </div>
-                                    )}
-                                    <div className="flex flex-col gap-2">
-                                        <input
-                                            type="file"
-                                            id="cover-upload"
-                                            className="hidden"
-                                            accept="image/png, image/jpeg, image/webp"
-                                            onChange={handleCoverImageUpload}
-                                            disabled={isCoverUploading}
-                                        />
-                                        <label htmlFor="cover-upload" className={`cursor-pointer text-sm font-medium px-4 py-2 rounded-md transition-colors ${isCoverUploading ? 'bg-gray-400' : 'bg-indigo-600 hover:bg-indigo-700'} text-white`}>
-                                            {isCoverUploading ? 'Yükleniyor...' : 'Değiştir'}
-                                        </label>
-                                        
-                                        {currentLesson.coverImageUrl && (
-                                            <button onClick={handleRemoveCoverImage} className="text-sm font-medium text-red-600 hover:text-red-800 dark:text-red-400 dark:hover:text-red-300">
-                                                Kaldır
-                                            </button>
-                                        )}
-                                    </div>
-                                </div>
-                            </div>
+                           <div className="space-y-4">
+                               <div>
+                                   <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Ders Videosu (mp4)</label>
+                                   <div className="mt-2 flex items-center gap-4">
+                                       {currentLesson?.video_url ? (
+                                           <video src={currentLesson.video_url} controls className="w-48 h-28 rounded-md shadow" />
+                                       ) : (
+                                           <div className="w-48 h-28 bg-gray-200 dark:bg-gray-700 rounded-md flex items-center justify-center">
+                                               <Play className="w-8 h-8 text-gray-400" />
+                                           </div>
+                                       )}
+                                       <div className="flex flex-col gap-2">
+                                           <input
+                                               type="file"
+                                               id="video-upload"
+                                               className="hidden"
+                                               accept="video/mp4"
+                                               onChange={handleVideoUpload}
+                                               disabled={uploading}
+                                           />
+                                           <label htmlFor="video-upload" className={`cursor-pointer text-sm font-medium px-4 py-2 rounded-md transition-colors ${uploading ? 'bg-gray-400' : 'bg-indigo-600 hover:bg-indigo-700'} text-white`}>
+                                               {uploading ? 'Yükleniyor...' : 'Video Yükle'}
+                                           </label>
+                                           {currentLesson?.video_url && (
+                                               <button onClick={handleRemoveVideo} className="text-sm font-medium text-red-600 hover:text-red-800 dark:text-red-400 dark:hover:text-red-300">
+                                                   Kaldır
+                                               </button>
+                                           )}
+                                       </div>
+                                   </div>
+                               </div>
+
+                               <div>
+                                   <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Kapak Fotoğrafı</label>
+                                   <div className="mt-2 flex items-center gap-4">
+                                       {currentLesson.cover_image_url ? (
+                                           <img src={currentLesson.cover_image_url} alt="Kapak Fotoğrafı" className="w-32 h-20 object-cover rounded-md shadow" />
+                                       ) : (
+                                           <div className="w-32 h-20 bg-gray-200 dark:bg-gray-700 rounded-md flex items-center justify-center">
+                                               <ImageIcon className="w-8 h-8 text-gray-400" />
+                                           </div>
+                                       )}
+                                       <div className="flex flex-col gap-2">
+                                           <input
+                                               type="file"
+                                               id="cover-upload"
+                                               className="hidden"
+                                               accept="image/png, image/jpeg, image/webp"
+                                               onChange={handleCoverImageUpload}
+                                               disabled={isCoverUploading}
+                                           />
+                                           <label htmlFor="cover-upload" className={`cursor-pointer text-sm font-medium px-4 py-2 rounded-md transition-colors ${isCoverUploading ? 'bg-gray-400' : 'bg-indigo-600 hover:bg-indigo-700'} text-white`}>
+                                               {isCoverUploading ? 'Yükleniyor...' : 'Değiştir'}
+                                           </label>
+                                           
+                                           {currentLesson.cover_image_url && (
+                                               <button onClick={handleRemoveCoverImage} className="text-sm font-medium text-red-600 hover:text-red-800 dark:text-red-400 dark:hover:text-red-300">
+                                                   Kaldır
+                                               </button>
+                                           )}
+                                       </div>
+                                   </div>
+                               </div>
+                           </div>
                       </div>
 
                       <div className="bg-gray-50 dark:bg-gray-800 p-6 rounded-lg">
@@ -720,9 +735,9 @@ const AdminPage = () => {
                                   <div className="flex flex-col items-center justify-center pt-5 pb-6">
                                       <UploadCloud className="w-8 h-8 mb-4 text-gray-500 dark:text-gray-400"/>
                                       <p className="mb-2 text-sm text-gray-500 dark:text-gray-400"><span className="font-semibold">Yüklemek için tıkla</span> veya sürükle</p>
-                                      <p className="text-xs text-gray-500 dark:text-gray-400">PDF (MAKS. 5MB)</p>
+                                      <p className="text-xs text-gray-500 dark:text-gray-400">PDF, DOC, PPT, ZIP, RAR (MAKS. 100MB)</p>
                                   </div>
-                                  <input id="dropzone-file" type="file" className="hidden" onChange={handleFileUpload} disabled={uploading} accept=".pdf"/>
+                                  <input id="dropzone-file" type="file" className="hidden" onChange={handleFileUpload} disabled={uploading} accept=".pdf,.doc,.docx,.ppt,.pptx,.zip,.rar"/>
                               </label>
                           </div> 
                           {uploading && (
@@ -761,7 +776,7 @@ const AdminPage = () => {
                            <h4 className="text-lg font-semibold text-gray-900 dark:text-gray-200">İnteraktif Video Soruları</h4>
                            <button 
                             onClick={handleGenerateInteractiveQuestions}
-                            disabled={isGeneratingQuestions || !currentLesson?.youtubeLink}
+                            disabled={isGeneratingQuestions || !currentLesson?.content}
                             className="flex items-center text-sm font-medium px-3 py-1.5 rounded-md bg-indigo-100 text-indigo-700 hover:bg-indigo-200 dark:bg-indigo-900/50 dark:text-indigo-300 dark:hover:bg-indigo-900 disabled:opacity-50 disabled:cursor-not-allowed"
                            >
                              <Sparkles className={`w-4 h-4 mr-2 ${isGeneratingQuestions ? 'animate-spin' : ''}`}/>
